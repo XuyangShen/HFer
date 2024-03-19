@@ -70,12 +70,14 @@ class HuggingFaceModel(LLModel):
 class HuggingFaceModelWrap(HuggingFaceModel):
 
     def __init__(self, repo_or_path, tok_configs, model_configs):
-        tok = AutoTokenizer.from_pretrained(repo_or_path,
-                                            trust_remote_code=True,
-                                            add_bos_token=False,
-                                            padding_side='left',
-                                            **tok_configs)
-        model = AutoModelForCausalLM.from_pretrained(repo_or_path, trust_remote_code=True, **model_configs)
+        tok: AutoTokenizer = AutoTokenizer.from_pretrained(repo_or_path,
+                                                           trust_remote_code=True,
+                                                           add_bos_token=False,
+                                                           padding_side='left',
+                                                           **tok_configs)
+        model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(repo_or_path,
+                                                                           trust_remote_code=True,
+                                                                           **model_configs)
 
         model_vocab_size = model.get_input_embeddings().weight.size(0)
         tokenzier_vocab_size = len(tok)
@@ -135,8 +137,6 @@ def llama(repo_or_path) -> HuggingFaceModel:
     tok.pad_token = tok.eos_token
     model.config.end_token_id = tok.eos_token_id
     model.config.pad_token_id = model.config.eos_token_id
-
-    return HuggingFaceModel(tok, model)
 
 
 @register_model
