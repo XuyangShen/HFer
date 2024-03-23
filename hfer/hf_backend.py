@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 import logging
 
-from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
 import torch
 import transformers
 from transformers import (
@@ -18,7 +17,10 @@ from transformers.generation.utils import GenerationConfig
 
 from ._registry import register_model
 
-__all__ = ['tnl3', 'tnl', 'llama', 'baichuan', 'baichuan2', 'bloom', 'mamba', 'LLModel', 'HuggingFaceModel']
+__all__ = [
+    'tnl3', 'tnl', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral', 'mistral_moe',
+    'mamba', 'LLModel', 'HuggingFaceModel'
+]
 
 # detect transformers version
 logging.info(f'transformers version: {transformers.__version__}')
@@ -115,6 +117,22 @@ def tnl(repo_or_path) -> HuggingFaceModel:
 
 
 @register_model
+def mistral(repo_or_path) -> HuggingFaceModel:
+    tok_configs = {'use_fast': True}
+    model_configs = {'torch_dtype': torch.bfloat16}
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
+def mistral_moe(repo_or_path) -> HuggingFaceModel:
+    tok_configs = {'use_fast': True}
+    model_configs = {'torch_dtype': torch.bfloat16}
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
 def llama(repo_or_path) -> HuggingFaceModel:
 
     tok = LlamaTokenizer.from_pretrained(repo_or_path,
@@ -144,8 +162,11 @@ def baichuan(repo_or_path) -> HuggingFaceModel:
     model_configs = {'torch_dtype': torch.float16}
     model = HuggingFaceModelWrap(repo_or_path, {}, model_configs)
 
-    model.tok.pad_token_id = 0
-    model.model.config.pad_token_id = 0
+    try:
+        model.model.generation_config = GenerationConfig.from_pretrained(repo_or_path)
+    except Exception:
+        model.tok.pad_token_id = 0
+        model.model.config.pad_token_id = 0
 
     return model
 
@@ -156,9 +177,41 @@ def baichuan2(repo_or_path) -> HuggingFaceModel:
     model_configs = {'torch_dtype': torch.bfloat16}
     model = HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
 
-    model.model.generation_config = GenerationConfig.from_pretrained(repo_or_path)
+    try:
+        model.model.generation_config = GenerationConfig.from_pretrained(repo_or_path)
+    except Exception:
+        model.tok.pad_token_id = 0
+        model.model.config.pad_token_id = 0
 
     return model
+
+
+@register_model
+def qwen(repo_or_path) -> HuggingFaceModel:
+    tok_configs = {}
+    model_configs = {'bf16': True}
+
+    model = HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+    try:
+        model.model.generation_config = GenerationConfig.from_pretrained(repo_or_path, trust_remote_code=True)
+    except Exception as e:
+        print(e)
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
+def qwen1_5(repo_or_path) -> HuggingFaceModel:
+    tok_configs = {}
+    model_configs = {'bf16': True}
+
+    model = HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+    try:
+        model.model.generation_config = GenerationConfig.from_pretrained(repo_or_path, trust_remote_code=True)
+    except Exception as e:
+        print(e)
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
 
 
 @register_model
@@ -175,9 +228,34 @@ def bloom(repo_or_path) -> HuggingFaceModel:
     return HuggingFaceModel(tok, model)
 
 
+@register_model
+def pythia(repo_or_path) -> HuggingFaceModel:
+    tok = AutoTokenizer.from_pretrained(repo_or_path, trust_remote_code=True, add_bos_token=False, padding_side='left')
+
+    model = GPTNeoXForCausalLM.from_pretrained(repo_or_path)
+
+    tok.eos_token_id = 0
+    model.config.eos_token_id = 0
+    tok.pad_token_id = 1
+    model.config.pad_token_id = 1
+
+    model_vocab_size = model.get_input_embeddings().weight.size(0)
+    tokenzier_vocab_size = len(tok)
+    logging.info(f'Vocab of the base model: {model_vocab_size}')
+    logging.info(f'Vocab of the tokenizer: {tokenzier_vocab_size}')
+
+    return HuggingFaceModel(tok, model)
+
+
 class MambaModel(LLModel):
 
     def __init__(self, repo_or_path):
+        try:
+            from mamba_ssm.models.mixer_seq_simple import MambaLMHeadModel
+        except Exception as e:
+            print('Please try to install mamba!')
+            raise e
+
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.device = device
 
