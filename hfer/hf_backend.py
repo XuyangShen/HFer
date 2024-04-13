@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 import logging
 
 import torch
+
 import transformers
 from transformers import (
     AutoConfig,
@@ -19,7 +20,7 @@ from ._registry import register_model
 
 __all__ = [
     'tnl3', 'tnl', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral', 'mistral_moe',
-    'mamba', 'LLModel', 'HuggingFaceModel'
+    'mamba', 'mpt', 'jamba', 'recurrentgemma', 'LLModel', 'HuggingFaceModel'
 ]
 
 # detect transformers version
@@ -44,9 +45,7 @@ class LLModel(ABC):
 class HuggingFaceModel(LLModel):
 
     def __init__(self, tokenizer, model):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model.eval()
-        model.to(self.device)
 
         self.tok = tokenizer
         self.model = model
@@ -58,7 +57,7 @@ class HuggingFaceModel(LLModel):
         return self.model
 
     def chat(self, messages, config):
-        inputs = self.tok(messages, return_tensors='pt').to(self.device)
+        inputs = self.tok(messages, return_tensors='pt').to("cuda")
         outputs = self.model.generate(inputs.input_ids, do_sample=True, **config)
         try:
             response = self.tok.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)[0]
@@ -79,6 +78,7 @@ class HuggingFaceModelWrap(HuggingFaceModel):
                                                            **tok_configs)
         model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(repo_or_path,
                                                                            trust_remote_code=True,
+                                                                           device_map='auto',
                                                                            **model_configs)
 
         model_vocab_size = model.get_input_embeddings().weight.size(0)
@@ -145,7 +145,10 @@ def llama(repo_or_path) -> HuggingFaceModel:
     else:
         config = AutoConfig.from_pretrained(repo_or_path)
 
-    model = LlamaForCausalLM.from_pretrained(repo_or_path, config=config, torch_dtype=torch.bfloat16)
+    model = LlamaForCausalLM.from_pretrained(repo_or_path,
+                                             config=config,
+                                             torch_dtype=torch.bfloat16,
+                                             device_map='auto')
 
     model_vocab_size = model.get_input_embeddings().weight.size(0)
     tokenzier_vocab_size = len(tok)
@@ -218,7 +221,7 @@ def qwen1_5(repo_or_path) -> HuggingFaceModel:
 def bloom(repo_or_path) -> HuggingFaceModel:
     tok = AutoTokenizer.from_pretrained(repo_or_path, trust_remote_code=True, add_bos_token=False, padding_side='left')
 
-    model = BloomForCausalLM.from_pretrained(repo_or_path)
+    model = BloomForCausalLM.from_pretrained(repo_or_path, device_map='auto')
 
     model_vocab_size = model.get_input_embeddings().weight.size(0)
     tokenzier_vocab_size = len(tok)
@@ -232,7 +235,7 @@ def bloom(repo_or_path) -> HuggingFaceModel:
 def pythia(repo_or_path) -> HuggingFaceModel:
     tok = AutoTokenizer.from_pretrained(repo_or_path, trust_remote_code=True, add_bos_token=False, padding_side='left')
 
-    model = GPTNeoXForCausalLM.from_pretrained(repo_or_path)
+    model = GPTNeoXForCausalLM.from_pretrained(repo_or_path, device_map='auto')
 
     tok.eos_token_id = 0
     model.config.eos_token_id = 0
@@ -256,7 +259,6 @@ class MambaModel(LLModel):
             print('Please try to install mamba!')
             raise e
 
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.device = device
 
         tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
@@ -273,7 +275,7 @@ class MambaModel(LLModel):
         return self.model
 
     def chat(self, messages, config={}):
-        input_ids = self.tok(messages, return_tensors='pt').to(self.device).input_ids
+        input_ids = self.tok(messages, return_tensors='pt').input_ids
         max_length = input_ids.shape[1] + config['max_new_tokens']
         del config['max_new_tokens']
 
@@ -290,3 +292,50 @@ class MambaModel(LLModel):
 @register_model
 def mamba(repo_or_path) -> LLModel:
     return MambaModel(repo_or_path)
+
+
+@register_model
+def jamba(repo_or_path) -> HuggingFaceModel:
+    try:
+        from mamba_ssm import Mamba
+    except Exception as e:
+        logging.error('Try to pip install mamba_ssm!')
+        raise e
+
+    tok_configs = {'use_fast': True}
+    model_configs = {'torch_dtype': torch.bfloat16}
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
+def recurrentgemma(repo_or_path) -> HuggingFaceModel:
+
+    tok_configs = {}
+    model_configs = {'torch_dtype': torch.bfloat16}
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
+def mpt(repo_or_path) -> HuggingFaceModel:
+    # tok = AutoTokenizer.from_pretrained('EleutherAI/gpt-neox-20b', add_bos_token=False, padding_side='left')
+    tok = AutoTokenizer.from_pretrained("/cpfs01/user/shenxuyang/LLM/models-hf/gpt-neox-20b",
+                                        trust_remote_code=True,
+                                        add_bos_token=False,
+                                        padding_side='left')
+
+    config = AutoConfig.from_pretrained(repo_or_path, trust_remote_code=True)
+    config.max_seq_len = 12000  # (input + output) tokens can now be up to 4096
+
+    model = AutoModelForCausalLM.from_pretrained(repo_or_path,
+                                                 config=config,
+                                                 trust_remote_code=True,
+                                                 device_map='auto')
+
+    model_vocab_size = model.get_input_embeddings().weight.size(0)
+    tokenzier_vocab_size = len(tok)
+    logging.info(f'Vocab of the base model: {model_vocab_size}')
+    logging.info(f'Vocab of the tokenizer: {tokenzier_vocab_size}')
+
+    return HuggingFaceModel(tok, model)
