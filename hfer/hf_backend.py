@@ -19,8 +19,8 @@ from transformers.generation.utils import GenerationConfig
 from ._registry import register_model
 
 __all__ = [
-    'tnl3', 'tnl', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral', 'mistral_moe',
-    'mamba', 'mpt', 'jamba', 'recurrentgemma', 'LLModel', 'HuggingFaceModel'
+    'tnl3', 'tnl', 'llama3', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral',
+    'mixtral', 'mamba', 'mpt', 'jamba', 'recurrentgemma', 'LLModel', 'HuggingFaceModel'
 ]
 
 # detect transformers version
@@ -125,8 +125,22 @@ def mistral(repo_or_path) -> HuggingFaceModel:
 
 
 @register_model
-def mistral_moe(repo_or_path) -> HuggingFaceModel:
+def mixtral(repo_or_path) -> HuggingFaceModel:
     tok_configs = {'use_fast': True}
+    model_configs = {'torch_dtype': torch.bfloat16}
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
+def llama3(repo_or_path) -> HuggingFaceModel:
+    try:
+        import tiktoken
+    except Exception as e:
+        logging.error('Try to pip install tiktoken!')
+        raise e
+
+    tok_configs = {}
     model_configs = {'torch_dtype': torch.bfloat16}
 
     return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
@@ -158,6 +172,8 @@ def llama(repo_or_path) -> HuggingFaceModel:
     tok.pad_token = tok.eos_token
     model.config.end_token_id = tok.eos_token_id
     model.config.pad_token_id = model.config.eos_token_id
+
+    return HuggingFaceModel(tok, model)
 
 
 @register_model
