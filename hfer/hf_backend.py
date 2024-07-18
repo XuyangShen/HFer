@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
+import json
 import logging
+import os
+from pathlib import Path
+from typing import Type, Union
 
 import torch
-
 import transformers
 from transformers import (
     AutoConfig,
-    AutoModel,
     AutoModelForCausalLM,
     AutoTokenizer,
     BloomForCausalLM,
@@ -16,11 +18,21 @@ from transformers import (
 )
 from transformers.generation.utils import GenerationConfig
 
+try:
+    from mistral_common.tokens.tokenizers.base import Tokenizer
+    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    from mistral_inference.generate import generate, generate_mamba
+    from mistral_inference.mamba import Mamba
+    from mistral_inference.transformer import Transformer
+except ImportError as e:
+    logging.warning('Try to install mistral_inference!')
+    print(e)
+
 from ._registry import register_model
 
 __all__ = [
     'tnl3', 'tnl', 'llama3', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral',
-    'mixtral', 'mamba', 'mpt', 'jamba', 'recurrentgemma', 'LLModel', 'HuggingFaceModel'
+    'mixtral', 'mamba', 'mpt', 'jamba', 'recurrentgemma', 'mistral_inf', 'LLModel', 'HuggingFaceModel'
 ]
 
 # detect transformers version
@@ -87,6 +99,81 @@ class HuggingFaceModelWrap(HuggingFaceModel):
         logging.info(f'Vocab of the tokenizer: {tokenzier_vocab_size}')
 
         super().__init__(tok, model)
+
+
+class MistralModel(LLModel):
+
+    def __init__(self, tokenizer, model):
+        self.tok = tokenizer
+        self.model = model
+
+        self.generate_fn = generate if isinstance(model, Transformer) else generate_mamba
+
+    def get_tokenizer(self) -> Tokenizer:
+        return self.tok
+
+    def get_model(self):
+        return self.model
+
+    def chat(self, messages, config):
+        tokens = self.tok.encode(messages, bos=True, eos=False)
+
+        generated_tokens, _ = self.generate_fn(  # type: ignore[operator]
+            [tokens],
+            self.model,
+            max_tokens=config['max_new_tokens'],
+            temperature=config['temperature'],
+            eos_id=self.tok.eos_id,
+        )
+
+        try:
+            response = self.tok.decode(generated_tokens[0])
+        except Exception as e:
+            logging.error(e)
+            response = ''
+
+        return response
+
+
+class MistralModelWrap(MistralModel):
+
+    def __init__(self, path):
+        mistral_tokenizer: MistralTokenizer = self.load_tokenizer(Path(path))
+        tokenizer: Tokenizer = mistral_tokenizer.instruct_tokenizer.tokenizer
+
+        model_cls = self.get_model_cls(path)
+        model = model_cls.from_folder(Path(path), max_batch_size=1, num_pipeline_ranks=1)
+
+        super().__init__(tokenizer, model)
+
+    @staticmethod
+    def get_model_cls(model_path: str) -> Union[Type[Mamba], Type[Transformer]]:
+        with open(Path(model_path) / "params.json", "r") as f:
+            args_dict = json.load(f)
+
+        return {
+            "mamba": Mamba,
+            "transformer": Transformer
+        }[args_dict.get("model_type", "transformer")]  # type: ignore[return-value]
+
+    @staticmethod
+    def load_tokenizer(model_path: Path) -> MistralTokenizer:
+        tokenizer = [f for f in os.listdir(Path(model_path)) if f.startswith("tokenizer.model")]
+        assert (
+            len(tokenizer) > 0
+        ), f"No tokenizer found in {model_path}, make sure to place a `tokenizer.model.[v1,v2,v3]` file in {model_path}."
+        assert (
+            len(tokenizer) == 1
+        ), f"Multiple tokenizers {', '.join(tokenizer)} found in `model_path`, make sure to only have one tokenizer"
+
+        mistral_tokenizer = MistralTokenizer.from_file(str(model_path / tokenizer[0]))
+
+        return mistral_tokenizer
+
+
+@register_model
+def mistral_inf(repo_or_path) -> MistralModel:
+    return MistralModelWrap(path=repo_or_path)
 
 
 @register_model
@@ -159,10 +246,7 @@ def llama(repo_or_path) -> HuggingFaceModel:
     else:
         config = AutoConfig.from_pretrained(repo_or_path)
 
-    model = LlamaForCausalLM.from_pretrained(repo_or_path,
-                                             config=config,
-                                             torch_dtype=torch.bfloat16,
-                                             device_map='auto')
+    model = LlamaForCausalLM.from_pretrained(repo_or_path, config=config, torch_dtype=torch.bfloat16, device_map='auto')
 
     model_vocab_size = model.get_input_embeddings().weight.size(0)
     tokenzier_vocab_size = len(tok)
@@ -344,10 +428,7 @@ def mpt(repo_or_path) -> HuggingFaceModel:
     config = AutoConfig.from_pretrained(repo_or_path, trust_remote_code=True)
     config.max_seq_len = 12000  # (input + output) tokens can now be up to 4096
 
-    model = AutoModelForCausalLM.from_pretrained(repo_or_path,
-                                                 config=config,
-                                                 trust_remote_code=True,
-                                                 device_map='auto')
+    model = AutoModelForCausalLM.from_pretrained(repo_or_path, config=config, trust_remote_code=True, device_map='auto')
 
     model_vocab_size = model.get_input_embeddings().weight.size(0)
     tokenzier_vocab_size = len(tok)
