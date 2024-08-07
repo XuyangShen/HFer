@@ -31,7 +31,7 @@ except ImportError as e:
 from ._registry import register_model
 
 __all__ = [
-    'tnl3', 'tnl', 'llama3', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral',
+    'tnl3', 'tnl3_tf32', 'tnl', 'llama3', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral',
     'mixtral', 'mamba', 'mpt', 'jamba', 'recurrentgemma', 'mistral_inf', 'LLModel', 'HuggingFaceModel'
 ]
 
@@ -69,7 +69,7 @@ class HuggingFaceModel(LLModel):
         return self.model
 
     def chat(self, messages, config):
-        inputs = self.tok(messages, return_tensors='pt').to("cuda")
+        inputs = self.tok(messages, return_tensors='pt').to('cuda')
         outputs = self.model.generate(inputs.input_ids, do_sample=True, **config)
         try:
             response = self.tok.batch_decode(outputs[:, inputs.input_ids.shape[1]:], skip_special_tokens=True)[0]
@@ -109,7 +109,7 @@ class MistralModel(LLModel):
 
         self.generate_fn = generate if isinstance(model, Transformer) else generate_mamba
 
-    def get_tokenizer(self) -> Tokenizer:
+    def get_tokenizer(self):
         return self.tok
 
     def get_model(self):
@@ -148,17 +148,17 @@ class MistralModelWrap(MistralModel):
 
     @staticmethod
     def get_model_cls(model_path: str) -> Union[Type[Mamba], Type[Transformer]]:
-        with open(Path(model_path) / "params.json", "r") as f:
+        with open(Path(model_path) / 'params.json', 'r') as f:
             args_dict = json.load(f)
 
         return {
-            "mamba": Mamba,
-            "transformer": Transformer
-        }[args_dict.get("model_type", "transformer")]  # type: ignore[return-value]
+            'mamba': Mamba,
+            'transformer': Transformer
+        }[args_dict.get('model_type', 'transformer')]  # type: ignore[return-value]
 
     @staticmethod
     def load_tokenizer(model_path: Path) -> MistralTokenizer:
-        tokenizer = [f for f in os.listdir(Path(model_path)) if f.startswith("tokenizer.model")]
+        tokenizer = [f for f in os.listdir(Path(model_path)) if f.startswith('tokenizer.model')]
         assert (
             len(tokenizer) > 0
         ), f"No tokenizer found in {model_path}, make sure to place a `tokenizer.model.[v1,v2,v3]` file in {model_path}."
@@ -186,6 +186,20 @@ def tnl3(repo_or_path) -> HuggingFaceModel:
 
     tok_configs = {'use_fast': True}
     model_configs = {'torch_dtype': torch.bfloat16}
+
+    return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
+
+
+@register_model
+def tnl3_tf32(repo_or_path) -> HuggingFaceModel:
+    try:
+        import tiktoken
+    except Exception as e:
+        logging.error('Try to pip install tiktoken!')
+        raise e
+
+    tok_configs = {'use_fast': True}
+    model_configs = {'torch_dtype': torch.float32}
 
     return HuggingFaceModelWrap(repo_or_path, tok_configs, model_configs)
 
@@ -359,10 +373,10 @@ class MambaModel(LLModel):
             print('Please try to install mamba!')
             raise e
 
-        self.device = device
+        self.device = 'cuda'
 
-        tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
-        model = MambaLMHeadModel.from_pretrained(repo_or_path, device=device, dtype=torch.float16)
+        tokenizer = AutoTokenizer.from_pretrained('EleutherAI/gpt-neox-20b')
+        model = MambaLMHeadModel.from_pretrained(repo_or_path, device=self.device, dtype=torch.float16)
         model.eval()
 
         self.tok = tokenizer
@@ -375,11 +389,16 @@ class MambaModel(LLModel):
         return self.model
 
     def chat(self, messages, config={}):
-        input_ids = self.tok(messages, return_tensors='pt').input_ids
+        input_ids = self.tok(messages, return_tensors='pt').input_ids.to(device=self.device)
         max_length = input_ids.shape[1] + config['max_new_tokens']
         del config['max_new_tokens']
 
-        outputs = self.model.generate(input_ids, max_length=max_length, cg=True, enable_timing=False, **config)
+        outputs = self.model.generate(input_ids,
+                                      max_length=max_length,
+                                      cg=True,
+                                      enable_timing=False,
+                                      top_p=0.8,
+                                      **config)
         try:
             response = self.tok.batch_decode(outputs[:, input_ids.shape[1]:], skip_special_tokens=True)[0]
         except Exception as e:
@@ -420,7 +439,7 @@ def recurrentgemma(repo_or_path) -> HuggingFaceModel:
 @register_model
 def mpt(repo_or_path) -> HuggingFaceModel:
     # tok = AutoTokenizer.from_pretrained('EleutherAI/gpt-neox-20b', add_bos_token=False, padding_side='left')
-    tok = AutoTokenizer.from_pretrained("/cpfs01/user/shenxuyang/LLM/models-hf/gpt-neox-20b",
+    tok = AutoTokenizer.from_pretrained('/cpfs01/user/shenxuyang/LLM/models-hf/gpt-neox-20b',
                                         trust_remote_code=True,
                                         add_bos_token=False,
                                         padding_side='left')
