@@ -31,8 +31,8 @@ except ImportError as e:
 from ._registry import register_model
 
 __all__ = [
-    'tnl3', 'tnl3_tf32', 'tnl', 'llama3', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia', 'mistral',
-    'mixtral', 'mamba', 'mpt', 'jamba', 'recurrentgemma', 'mistral_inf', 'LLModel', 'HuggingFaceModel'
+    'tnl3', 'tnl3_tf32', 'tnl', 'llama3', 'llama', 'baichuan', 'baichuan2', 'qwen', 'qwen1_5', 'bloom', 'pythia',
+    'mistral', 'mixtral', 'mamba', 'mpt', 'jamba', 'recurrentgemma', 'mistral_inf', 'LLModel', 'HuggingFaceModel'
 ]
 
 # detect transformers version
@@ -83,6 +83,14 @@ class HuggingFaceModel(LLModel):
 class HuggingFaceModelWrap(HuggingFaceModel):
 
     def __init__(self, repo_or_path, tok_configs, model_configs):
+
+        if os.path.exists(f'{repo_or_path}/device_map.json'):
+            dev_map = json.load(open(f'{repo_or_path}/device_map.json'))
+        else:
+            dev_map = 'auto'
+
+        print('dev_map', dev_map)
+
         tok: AutoTokenizer = AutoTokenizer.from_pretrained(repo_or_path,
                                                            trust_remote_code=True,
                                                            add_bos_token=False,
@@ -90,7 +98,7 @@ class HuggingFaceModelWrap(HuggingFaceModel):
                                                            **tok_configs)
         model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(repo_or_path,
                                                                            trust_remote_code=True,
-                                                                           device_map='auto',
+                                                                           device_map=dev_map,
                                                                            **model_configs)
 
         model_vocab_size = model.get_input_embeddings().weight.size(0)
